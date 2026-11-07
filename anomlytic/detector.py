@@ -401,8 +401,11 @@ class AnomlyticDetector:
                 "Precision": 0.0,
                 "Recall": 0.0,
                 "F1-score": 0.0,
+                "Best-F1": 0.0,
                 "PR-AUC": float(labels.mean()),
+                "AUC-PR": float(labels.mean()),
                 "ROC-AUC": 0.5,
+                "AUC-ROC": 0.5,
                 "Threshold": 0.5,
             }
 
@@ -419,11 +422,15 @@ class AnomlyticDetector:
         best_f1 = float(f1s[best_idx])
         best_thresh = float(thresholds[best_idx]) if best_idx < len(thresholds) else float(thresholds[-1])
 
-        return {
+        res = {
             "Precision": round(best_precision, 4),
             "Recall": round(best_recall, 4),
             "F1-score": round(best_f1, 4),
+            "Best-F1": round(best_f1, 4),
             "PR-AUC": round(auc_pr, 4),
+            "AUC-PR": round(auc_pr, 4),
             "ROC-AUC": round(auc_roc, 4),
+            "AUC-ROC": round(auc_roc, 4),
             "Threshold": round(best_thresh, 4),
         }
+        return res
