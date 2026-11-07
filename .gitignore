@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 results/
 *.pth
+*.pt
+checkpoints/
 .pytest_cache/
 data/TSB-AD-U/
 data/TSB-AD-M/

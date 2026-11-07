@@ -1,7 +1,10 @@
 import os
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 4))
 
+import copy
 import math
+import time
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -18,6 +21,7 @@ from .dataset import PatchDataset
 class AnomlyticDetector:
     """
     End-to-End Anomaly Detector combining 1D CNN, Patch Representations, and Metric Learning.
+    Supports checkpointing, train/val loss recording, and inference latency/VRAM profiling.
     """
 
     def __init__(
@@ -66,6 +70,7 @@ class AnomlyticDetector:
         self.memory_bank: torch.Tensor | None = None  # (K, embed_dim)
         self.mean: np.ndarray | None = None
         self.std: np.ndarray | None = None
+        self.history: dict[str, list[float]] = {"step": [], "train_loss": [], "val_loss": []}
 
     def _set_seed(self):
         torch.manual_seed(self.random_seed)
@@ -73,12 +78,20 @@ class AnomlyticDetector:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.random_seed)
 
-    def fit(self, train_data: np.ndarray, verbose: bool = False) -> "AnomlyticDetector":
+    def fit(
+        self,
+        train_data: np.ndarray,
+        val_data: np.ndarray | None = None,
+        checkpoint_path: str | Path | None = None,
+        verbose: bool = False,
+    ) -> "AnomlyticDetector":
         """
         Trains the 1D CNN patch encoder on normal time series data via metric learning,
-        and constructs the normal prototype memory bank.
+        optionally computes validation loss, and saves model checkpoints.
         """
         self._set_seed()
+        self.history = {"step": [], "train_loss": [], "val_loss": []}
+
         if train_data.ndim == 1:
             train_data = train_data[:, np.newaxis]
 
@@ -103,6 +116,16 @@ class AnomlyticDetector:
             drop_last=(N > self.batch_size),
         )
 
+        # Prepare Validation Loader if val_data provided
+        val_loader = None
+        if val_data is not None:
+            if val_data.ndim == 1:
+                val_data = val_data[:, np.newaxis]
+            scaled_val = (val_data - self.mean) / self.std
+            val_patches, val_indices = extract_patches(scaled_val, patch_size=effective_patch_size, stride=self.stride)
+            val_dataset = PatchDataset(val_patches, val_indices)
+            val_loader = DataLoader(val_dataset, batch_size=min(self.batch_size, len(val_patches)), shuffle=False)
+
         # Initialize Model
         self.model = PatchCNN1D(
             in_channels=C,
@@ -126,14 +149,17 @@ class AnomlyticDetector:
 
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-        self.model.train()
+        best_loss = float("inf")
+        best_state_dict = None
         step = 0
+
         while step < self.num_iters:
             for batch_x, batch_idx in loader:
                 if step >= self.num_iters:
                     break
                 step += 1
 
+                self.model.train()
                 batch_x = batch_x.to(self.device)
                 batch_idx = batch_idx.to(self.device)
 
@@ -145,11 +171,46 @@ class AnomlyticDetector:
                 optimizer.step()
                 scheduler.step()
 
+                train_loss_val = float(loss.item())
+
+                # Compute validation loss
+                val_loss_val = None
+                if val_loader is not None:
+                    self.model.eval()
+                    with torch.no_grad():
+                        val_losses = []
+                        for vx, vi in val_loader:
+                            vx = vx.to(self.device)
+                            vi = vi.to(self.device)
+                            _, vz = self.model(vx)
+                            val_losses.append(criterion(vz, vi).item())
+                        val_loss_val = float(np.mean(val_losses)) if val_losses else train_loss_val
+
+                self.history["step"].append(step)
+                self.history["train_loss"].append(train_loss_val)
+                if val_loss_val is not None:
+                    self.history["val_loss"].append(val_loss_val)
+
+                monitored_loss = val_loss_val if val_loss_val is not None else train_loss_val
+                if monitored_loss < best_loss:
+                    best_loss = monitored_loss
+                    best_state_dict = copy.deepcopy(self.model.state_dict())
+
                 if verbose and step % max(1, self.num_iters // 5) == 0:
-                    print(f"    [Step {step}/{self.num_iters}] Loss: {loss.item():.4f}")
+                    v_str = f" | Val Loss: {val_loss_val:.4f}" if val_loss_val is not None else ""
+                    print(f"    [Step {step}/{self.num_iters}] Train Loss: {train_loss_val:.4f}{v_str}")
+
+        # Restore weights that achieved best loss
+        if best_state_dict is not None:
+            self.model.load_state_dict(best_state_dict)
 
         # Build Memory Bank of normal representations
         self._build_memory_bank(dataset)
+
+        # Save checkpoint if requested
+        if checkpoint_path:
+            self.save_checkpoint(checkpoint_path)
+
         return self
 
     @torch.no_grad()
@@ -204,7 +265,6 @@ class AnomlyticDetector:
         if data.ndim == 1:
             data = data[:, np.newaxis]
 
-        # Apply same scaling learned during fit
         scaled_data = (data - self.mean) / self.std
 
         T, _ = scaled_data.shape
@@ -236,11 +296,101 @@ class AnomlyticDetector:
         )
         return point_scores
 
+    def profile_inference(self, data: np.ndarray) -> tuple[np.ndarray, dict[str, float]]:
+        """
+        Profiles inference execution: measures point-wise anomaly score generation,
+        wall-clock latency (ms), throughput (microseconds/point), and peak GPU VRAM (MB).
+        """
+        if torch.cuda.is_available() and self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
+            torch.cuda.synchronize(self.device)
+
+        t_start = time.perf_counter()
+        scores = self.predict_score(data)
+
+        if torch.cuda.is_available() and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            peak_vram_mb = torch.cuda.max_memory_allocated(self.device) / (1024 ** 2)
+        else:
+            peak_vram_mb = 0.0
+
+        latency_ms = (time.perf_counter() - t_start) * 1000.0
+        num_points = len(data)
+        us_per_point = (latency_ms * 1000.0) / max(1, num_points)
+
+        profile = {
+            "Total_Latency_ms": round(latency_ms, 2),
+            "Latency_us_per_point": round(us_per_point, 2),
+            "Peak_GPU_Memory_MB": round(peak_vram_mb, 2),
+            "Num_Points": num_points,
+        }
+        return scores, profile
+
+    def save_checkpoint(self, path: str | Path):
+        """Saves complete model checkpoint, config, scalers, and memory bank."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint = {
+            "model_state": self.model.state_dict() if self.model else None,
+            "memory_bank": self.memory_bank,
+            "mean": self.mean,
+            "std": self.std,
+            "history": self.history,
+            "config": {
+                "patch_size": self.patch_size,
+                "stride": self.stride,
+                "embed_dim": self.embed_dim,
+                "projection_dim": self.projection_dim,
+                "loss_type": self.loss_type,
+                "radius": self.radius,
+                "margin": self.margin,
+                "temperature": self.temperature,
+                "num_iters": self.num_iters,
+                "lr": self.lr,
+                "weight_decay": self.weight_decay,
+                "batch_size": self.batch_size,
+                "top_k": self.top_k,
+                "memory_bank_ratio": self.memory_bank_ratio,
+                "max_prototypes": self.max_prototypes,
+                "random_seed": self.random_seed,
+            },
+        }
+        torch.save(checkpoint, path)
+
+    def load_checkpoint(self, path: str | Path):
+        """Loads model weights, scalers, and memory bank from checkpoint."""
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        self.mean = checkpoint["mean"]
+        self.std = checkpoint["std"]
+        if checkpoint["memory_bank"] is not None:
+            self.memory_bank = checkpoint["memory_bank"].to(self.device)
+        else:
+            self.memory_bank = None
+        self.history = checkpoint.get("history", {})
+
+        cfg = checkpoint.get("config", {})
+        for k, v in cfg.items():
+            if hasattr(self, k):
+                setattr(self, k, v)
+
+        if checkpoint["model_state"] and self.model is None:
+            # Infer in_channels from mean shape
+            in_c = self.mean.shape[1] if self.mean is not None else 1
+            self.model = PatchCNN1D(
+                in_channels=in_c,
+                embed_dim=self.embed_dim,
+                projection_dim=self.projection_dim,
+                include_stats=True,
+            ).to(self.device)
+
+        if self.model and checkpoint["model_state"]:
+            self.model.load_state_dict(checkpoint["model_state"])
+
     @staticmethod
     def evaluate(scores: np.ndarray, labels: np.ndarray) -> dict[str, float]:
         """
         Evaluates detection performance against ground truth labels.
-        Returns AUC-ROC, AUC-PR, Best-F1, Precision, and Recall.
+        Returns Precision, Recall, F1-score, PR-AUC, ROC-AUC, and optimal Threshold.
         """
         scores = np.nan_to_num(scores, nan=0.0, posinf=1.0, neginf=0.0)
         labels = np.asarray(labels, dtype=np.int32)
@@ -248,24 +398,32 @@ class AnomlyticDetector:
         unique_labels = np.unique(labels)
         if len(unique_labels) < 2:
             return {
-                "AUC-ROC": 0.5,
-                "AUC-PR": float(labels.mean()),
-                "Best-F1": 0.0,
                 "Precision": 0.0,
                 "Recall": 0.0,
+                "F1-score": 0.0,
+                "PR-AUC": float(labels.mean()),
+                "ROC-AUC": 0.5,
+                "Threshold": 0.5,
             }
 
         auc_roc = float(roc_auc_score(labels, scores))
         auc_pr = float(average_precision_score(labels, scores))
 
+        # Precision-Recall curve threshold sweep for best F1
         precisions, recalls, thresholds = precision_recall_curve(labels, scores)
         f1s = 2 * (precisions * recalls) / (precisions + recalls + 1e-10)
-        best_idx = np.argmax(f1s)
+        best_idx = int(np.argmax(f1s))
+
+        best_precision = float(precisions[best_idx])
+        best_recall = float(recalls[best_idx])
+        best_f1 = float(f1s[best_idx])
+        best_thresh = float(thresholds[best_idx]) if best_idx < len(thresholds) else float(thresholds[-1])
 
         return {
-            "AUC-ROC": round(auc_roc, 4),
-            "AUC-PR": round(auc_pr, 4),
-            "Best-F1": round(float(f1s[best_idx]), 4),
-            "Precision": round(float(precisions[best_idx]), 4),
-            "Recall": round(float(recalls[best_idx]), 4),
+            "Precision": round(best_precision, 4),
+            "Recall": round(best_recall, 4),
+            "F1-score": round(best_f1, 4),
+            "PR-AUC": round(auc_pr, 4),
+            "ROC-AUC": round(auc_roc, 4),
+            "Threshold": round(best_thresh, 4),
         }
