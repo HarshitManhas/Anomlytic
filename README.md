@@ -87,15 +87,6 @@ Evaluated on the entire collection:
 
 ## 5. Baseline Validation Report & Empirical Graphs
 
-To establish a verified baseline, Anomlytic was evaluated on held-out test splits with train/validation loss recording, automatic checkpointing, and hardware profiling via `validate.py`:
-
-- [x] **Confirm training completed successfully**: Metric learning loss converged smoothly with Cosine LR annealing.
-- [x] **Save model checkpoints**: Best weights, scalers, and prototype memory banks saved to `checkpoints/`.
-- [x] **Record training and validation loss**: Step-by-step train/validation loss tracked and plotted below.
-- [x] **Evaluate on unseen test data**: Strict evaluation on held-out test splits (`test_x`, `test_y`).
-- [x] **Generate anomaly scores**: Point-wise scores in $[0, 1]$ generated via cosine distance & 1D rolling convolution.
-- [x] **Plot actual anomalies against predicted anomalies**: Ground-truth anomaly regions visualized against detector scores and optimal F1 thresholds.
-
 ### Quantitative Validation Metrics (Held-out Test Splits)
 
 | Benchmark Dataset | Domain | Channels | Test Points | Precision | Recall | F1-Score | PR-AUC | ROC-AUC | Optimal Threshold | Inference Latency | Peak VRAM |
