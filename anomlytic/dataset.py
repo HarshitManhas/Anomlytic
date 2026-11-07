@@ -73,7 +73,7 @@ def download_tsb_ad(dataset_type: str = "TSB-AD-U", target_dir: str | Path = "da
     target_path.mkdir(parents=True, exist_ok=True)
 
     existing = list(target_path.glob("*.csv"))
-    if existing:
+    if len(existing) > 10:
         print(f"Dataset already exists with {len(existing)} files in {target_path}")
         return target_path
 

@@ -3,3 +3,9 @@ __pycache__/
 results/
 *.pth
 .pytest_cache/
+data/TSB-AD-U/
+data/TSB-AD-M/
+!data/TSB-AD-U/013_NAB_id_13_Traffic_tr_623_1st_2084.csv
+!data/TSB-AD-U/346_UCR_id_44_Medical_tr_7456_1st_17390.csv
+!data/TSB-AD-M/008_MSL_id_7_Sensor_tr_656_1st_1630.csv
+!data/TSB-AD-M/169_SMAP_id_26_Sensor_tr_1811_1st_4510.csv
