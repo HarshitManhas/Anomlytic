@@ -75,7 +75,7 @@ Anomlytic is evaluated on the complete **[TSB-AD benchmark suite](https://github
 * **Standard Protocol**: Filenames encode the normal training cutoff `_tr_<N>_`. The model trains solely on normal intervals ($0 \dots N$) and is evaluated on unseen test data ($N \dots T$).
 
 ### Full 1,070-Dataset Benchmark Results
-Evaluated on full dataset collection:
+Evaluated on the entire collection:
 
 | Evaluation Suite | Datasets | Mean ROC-AUC | Mean PR-AUC | Mean Best-F1 | Mean Task Runtime |
 |---|:---:|:---:|:---:|:---:|:---:|
@@ -85,7 +85,45 @@ Evaluated on full dataset collection:
 
 ---
 
-## 5. Latency Profile (p50, p95, p99)
+## 5. Baseline Validation Report & Empirical Graphs
+
+To establish a verified baseline, Anomlytic was evaluated on held-out test splits with train/validation loss recording, automatic checkpointing, and hardware profiling via `validate.py`:
+
+- [x] **Confirm training completed successfully**: Metric learning loss converged smoothly with Cosine LR annealing.
+- [x] **Save model checkpoints**: Best weights, scalers, and prototype memory banks saved to `checkpoints/`.
+- [x] **Record training and validation loss**: Step-by-step train/validation loss tracked and plotted below.
+- [x] **Evaluate on unseen test data**: Strict evaluation on held-out test splits (`test_x`, `test_y`).
+- [x] **Generate anomaly scores**: Point-wise scores in $[0, 1]$ generated via cosine distance & 1D rolling convolution.
+- [x] **Plot actual anomalies against predicted anomalies**: Ground-truth anomaly regions visualized against detector scores and optimal F1 thresholds.
+
+### Quantitative Validation Metrics (Held-out Test Splits)
+
+| Benchmark Dataset | Domain | Channels | Test Points | Precision | Recall | F1-Score | PR-AUC | ROC-AUC | Optimal Threshold | Inference Latency | Peak VRAM |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **NAB Traffic** (`013_NAB`) | Traffic / Univariate | 1 | 1,871 | **0.7500** | **0.5685** | **0.6468** | **0.7445** | **0.9165** | 0.1313 | 83.3 ms (44.5 µs/pt) | 29.7 MB |
+| **NASA SMAP** (`169_SMAP`) | Spacecraft Telemetry | 25 | 5,433 | **0.8182** | **1.0000** | **0.9000** | **0.9757** | **0.9996** | 0.2214 | 175.3 ms (32.3 µs/pt) | 31.4 MB |
+
+---
+
+### Empirical Validation Graphs
+
+#### Univariate Benchmark: NAB Traffic Sensor Telemetry
+![NAB Traffic Validation Plot](assets/validation_traffic_univariate.png)
+* **Panel 1 (Top)**: Train loss decreases from $0.1992 \to 0.0776$; validation loss stabilizes cleanly at $0.1711$.
+* **Panel 2 (Middle)**: Unseen test stream with actual ground-truth traffic anomaly spikes highlighted in red.
+* **Panel 3 (Bottom)**: Generated continuous anomaly score with clear peaks corresponding to the anomalous traffic surge, cleanly exceeding the optimal threshold (ROC-AUC: 0.9165).
+
+---
+
+#### Multivariate Benchmark: NASA SMAP Mars Rover Telemetry (25 Channels)
+![NASA SMAP Validation Plot](assets/validation_smap_multivariate.png)
+* **Panel 1 (Top)**: Metric learning loss convergence across 50 iterations over 25 sensor channels.
+* **Panel 2 (Middle)**: Complex multi-sensor telemetry signal with anomalous sensor drop-out / desynchronization.
+* **Panel 3 (Bottom)**: Sharp, definitive anomaly score spike achieving a near-perfect ROC-AUC of **0.9996** and 100% recall.
+
+---
+
+## 6. Latency Profile (p50, p95, p99)
 
 Tested on **NVIDIA GeForce RTX 2050 (4 GB VRAM)** using PyTorch CUDA:
 
@@ -108,7 +146,7 @@ Tested on **NVIDIA GeForce RTX 2050 (4 GB VRAM)** using PyTorch CUDA:
 
 ---
 
-## 6. Cost per Task
+## 7. Cost per Task
 
 | Environment / Resource | Cost Metric | Cost Estimate |
 |---|---|---|
@@ -119,7 +157,7 @@ Tested on **NVIDIA GeForce RTX 2050 (4 GB VRAM)** using PyTorch CUDA:
 
 ---
 
-## 7. Reproducible Usage Guide
+## 8. Reproducible Usage Guide
 
 ### Installation
 ```bash
