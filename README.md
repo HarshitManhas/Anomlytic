@@ -8,6 +8,8 @@ Anomlytic is a self-contained Python / PyTorch implementation of patch-based rep
 
 ## 1. The Architecture
 
+![Anomlytic Architecture](assets/architecture.png)
+
 ```
 [Time Series (T, C)]
          │
